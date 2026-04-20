@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     mcp_host: str = "127.0.0.1"
     mcp_port: int = 8754
     mcp_path: str = Field(
-        default="/mcp/openapi-mcp/mcp",
+        default="/mcp/openapi-mcp",
         description=(
             "Public URL path where the Streamable HTTP endpoint lives. Must match "
             "the path clients hit at the nginx edge (default assumes /mcp/openapi-mcp/)."

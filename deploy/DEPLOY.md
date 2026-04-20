@@ -4,7 +4,7 @@ This directory ships everything needed to add `openapi-mcp-builder` alongside
 your existing MCP servers (`/mcp/accubid`, `/mcp/n8n`, ...) **without
 touching any sibling service**.
 
-Final public URL: `https://<your-host>/mcp/openapi-mcp/mcp`
+Final public URL: `https://<your-host>/mcp/openapi-mcp`
 
 Topology after install:
 
@@ -87,7 +87,7 @@ TRIMBLE_ENV=prod
 MCP_TRANSPORT=http
 MCP_HOST=127.0.0.1
 MCP_PORT=8754
-MCP_PATH=/mcp/openapi-mcp/mcp
+MCP_PATH=/mcp/openapi-mcp
 
 # Leave token blank for OBO passthrough from Trimble Agent Studio.
 TRIMBLE_ACCESS_TOKEN=
@@ -131,16 +131,16 @@ sudo journalctl -u openapi-mcp.service -n 50 --no-pager
 # 2. Local endpoint responds (404 on GET is expected for Streamable HTTP;
 #    the MCP URL only accepts POST with JSON-RPC. What matters is that
 #    nginx can reach the upstream.)
-curl -sS -I http://127.0.0.1:8754/mcp/openapi-mcp/mcp
+curl -sS -I http://127.0.0.1:8754/mcp/openapi-mcp
 
 # 3. Public endpoint through nginx
-curl -sS -I https://<your-host>/mcp/openapi-mcp/mcp
+curl -sS -I https://<your-host>/mcp/openapi-mcp
 ```
 
 Then point an MCP client (Trimble Agent Studio) at:
 
 ```
-https://<your-host>/mcp/openapi-mcp/mcp
+https://<your-host>/mcp/openapi-mcp
 ```
 
 and call the `create_mcp_from_openapi_url` tool.
@@ -182,7 +182,7 @@ Siblings under `/mcp/*` are unaffected.
 | Symptom                                | Fix                                                                                   |
 | -------------------------------------- | ------------------------------------------------------------------------------------- |
 | `502 Bad Gateway` from nginx           | `sudo systemctl status openapi-mcp` — check the port and host in `.env`.              |
-| 404 from the MCP client                | `MCP_PATH` in `.env` must be `/mcp/openapi-mcp/mcp` (matches the public URL).         |
+| 404 from the MCP client                | `MCP_PATH` in `.env` must be `/mcp/openapi-mcp` (matches the public URL).             |
 | `AuthError` in logs                    | OBO header missing and no `TRIMBLE_ACCESS_TOKEN` / client credentials configured.     |
 | SSE streams cut off at 60s             | Make sure `proxy_buffering off;` and the 1h timeouts from the snippet are applied.    |
 | Port 8754 conflicts                    | Change `MCP_PORT` in `.env` and update `proxy_pass` in `snippets/openapi-mcp.conf`.   |

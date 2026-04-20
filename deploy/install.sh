@@ -129,7 +129,7 @@ main() {
     install_service
     install_nginx_snippet
     restart_service
-    log "Done. Public URL: https://<host>/mcp/openapi-mcp/mcp"
+    log "Done. Public URL: https://<host>/mcp/openapi-mcp"
 }
 
 main "$@"
