@@ -56,22 +56,34 @@ git clone https://github.com/Charley-Forey-AI/openapi-mcp.git
 cd openapi-mcp
 ```
 
-### 3. Run the installer
+### 3. Preview the installer with `--dry-run`
+
+```bash
+sudo bash deploy/install.sh --dry-run
+```
+
+This audits `/mcp`, lists sibling services, checks port 8754, and prints
+every command that would run — without touching anything.
+
+### 4. Run the installer
 
 ```bash
 sudo bash deploy/install.sh
 ```
 
 The installer:
-- Creates a locked-down `mcp` system user and `/mcp/` if absent.
+- Creates a locked-down `mcp` system user and `/mcp/` if absent (leaves
+  existing `/mcp` ownership alone).
 - Rsyncs the repo to `/mcp/openapi-mcp/` (excluding `.git`, `.venv`, `.env`).
+  `--delete` is scoped to `/mcp/openapi-mcp/`, sibling folders are untouched.
 - Builds `/mcp/openapi-mcp/.venv` and `pip install -e .` as the `mcp` user.
-- Installs `openapi-mcp.service` and enables it.
-- Drops the nginx snippet at `/etc/nginx/snippets/openapi-mcp.conf`.
-- Restarts the service.
-- Prints the nginx one-liner you still need to add (see step 5).
+- Installs `openapi-mcp.service` and enables it (no sibling unit reloads).
+- Drops the nginx snippet at `/etc/nginx/snippets/openapi-mcp.conf` — the
+  snippet is INERT; nginx keeps serving its current config unchanged.
+- Restarts `openapi-mcp.service` only.
+- Prints the nginx one-liner you still need to add (see next step).
 
-### 4. Configure `/mcp/openapi-mcp/.env`
+### 5. Configure `/mcp/openapi-mcp/.env`
 
 On the first run the installer seeds `.env` from `.env.example` (mode 0600,
 owned by `mcp:mcp`). Edit it:
@@ -100,7 +112,7 @@ sudo systemctl restart openapi-mcp.service
 sudo systemctl status  openapi-mcp.service
 ```
 
-### 5. Wire up nginx (one line, one reload)
+### 6. Wire up nginx (one line, one reload)
 
 Edit the `server { ... }` block that already serves `/mcp/*` (usually in
 `/etc/nginx/sites-available/mcp` or similar) and add **one** line:
