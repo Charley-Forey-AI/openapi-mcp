@@ -56,8 +56,15 @@ class Settings(BaseSettings):
 
     # --- MCP transport ----------------------------------------------------- #
     mcp_transport: str = Field(default="http", description="One of 'stdio', 'http', or 'sse'.")
-    mcp_host: str = "0.0.0.0"
+    mcp_host: str = "127.0.0.1"
     mcp_port: int = 8754
+    mcp_path: str = Field(
+        default="/mcp/openapi-mcp/mcp",
+        description=(
+            "Public URL path where the Streamable HTTP endpoint lives. Must match "
+            "the path clients hit at the nginx edge (default assumes /mcp/openapi-mcp/)."
+        ),
+    )
 
     # --- Workflow tuning --------------------------------------------------- #
     parse_poll_timeout_seconds: float = 120.0

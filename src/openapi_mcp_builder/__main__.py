@@ -31,10 +31,18 @@ def main() -> None:
         mcp.run(transport="stdio")
     elif transport in {"http", "streamable-http", "sse"}:
         normalized = "http" if transport in {"http", "streamable-http"} else "sse"
+        log.info(
+            "Serving %s on %s:%d path=%s",
+            normalized,
+            settings.mcp_host,
+            settings.mcp_port,
+            settings.mcp_path,
+        )
         mcp.run(
             transport=normalized,  # type: ignore[arg-type]
             host=settings.mcp_host,
             port=settings.mcp_port,
+            path=settings.mcp_path,
         )
     else:
         raise SystemExit(
