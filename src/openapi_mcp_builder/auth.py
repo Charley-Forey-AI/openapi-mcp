@@ -76,18 +76,22 @@ class TokenProvider:
             if self._cached and self._cached.expires_at - 30 > now:
                 return self._cached.access_token
 
-            data: dict[str, str] = {
-                "grant_type": "client_credentials",
-                "client_id": self._settings.trimble_client_id or "",
-                "client_secret": self._settings.trimble_client_secret or "",
-            }
+            # Trimble's canonical client_credentials example uses HTTP Basic:
+            #   Authorization: Basic base64(client_id:client_secret)
+            # and sends only `grant_type` and `scope` in the body. We follow
+            # that pattern since it works across both staging and prod TID.
+            client_id = self._settings.trimble_client_id or ""
+            client_secret = self._settings.trimble_client_secret or ""
+            data: dict[str, str] = {"grant_type": "client_credentials"}
             if self._settings.trimble_scopes:
                 data["scope"] = self._settings.trimble_scopes
 
+            token_url = self._settings.resolved_token_url
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(
-                    self._settings.trimble_token_url,
+                    token_url,
                     data=data,
+                    auth=(client_id, client_secret),
                     headers={
                         "Accept": "application/json",
                         "Content-Type": "application/x-www-form-urlencoded",
@@ -96,7 +100,9 @@ class TokenProvider:
             if resp.status_code >= 400:
                 raise AuthError(
                     f"Trimble ID client_credentials exchange failed: "
-                    f"HTTP {resp.status_code} {resp.text}"
+                    f"HTTP {resp.status_code} at {token_url} :: {resp.text} "
+                    f"(hint: staging clients must use https://stage.id.trimble.com/oauth/token "
+                    f"and `scope` should be the registered client/application name)."
                 )
             payload = resp.json()
             access_token = payload.get("access_token")

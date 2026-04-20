@@ -19,6 +19,14 @@ _DEFAULT_BASE_URLS: dict[str, str] = {
     "prod": "https://tools.stage.trimble-ai.com",
 }
 
+# Trimble Identity (TID) has a separate tenant per environment. Dev and
+# staging share the pre-prod TID tenant; prod lives on the public tenant.
+_DEFAULT_TOKEN_URLS: dict[str, str] = {
+    "dev": "https://stage.id.trimble.com/oauth/token",
+    "stage": "https://stage.id.trimble.com/oauth/token",
+    "prod": "https://id.trimble.com/oauth/token",
+}
+
 
 class Settings(BaseSettings):
     """Environment-driven settings.
@@ -54,8 +62,21 @@ class Settings(BaseSettings):
 
     trimble_client_id: str | None = None
     trimble_client_secret: str | None = None
-    trimble_token_url: str = "https://id.trimble.com/oauth/token"
-    trimble_scopes: str | None = "openid agents models profile kb kb-ingest tools"
+    trimble_token_url: str | None = Field(
+        default=None,
+        description=(
+            "Trimble ID token endpoint. When unset, picked automatically from "
+            "TRIMBLE_ENV (dev/stage -> stage.id.trimble.com, prod -> id.trimble.com)."
+        ),
+    )
+    trimble_scopes: str | None = Field(
+        default=None,
+        description=(
+            "Scope string for client_credentials. For Trimble, this is usually the "
+            "registered *client/application name* (e.g. 'openapi-mcp'), NOT a "
+            "space-separated list of OAuth scopes."
+        ),
+    )
 
     # --- MCP transport ----------------------------------------------------- #
     mcp_transport: str = Field(default="http", description="One of 'stdio', 'http', or 'sse'.")
@@ -75,7 +96,7 @@ class Settings(BaseSettings):
     max_spec_bytes: int = 1_048_576_000  # ~1000 MiB
 
     @model_validator(mode="after")
-    def _resolve_base_url(self) -> Settings:
+    def _resolve_urls(self) -> Settings:
         if not self.trimble_tools_api_base_url:
             per_env = {
                 "dev": self.trimble_tools_api_dev_base_url,
@@ -83,6 +104,8 @@ class Settings(BaseSettings):
                 "prod": self.trimble_tools_api_prod_base_url,
             }
             self.trimble_tools_api_base_url = per_env[self.trimble_env]
+        if not self.trimble_token_url:
+            self.trimble_token_url = _DEFAULT_TOKEN_URLS[self.trimble_env]
         return self
 
     @property
@@ -90,6 +113,12 @@ class Settings(BaseSettings):
         """Non-optional accessor for the resolved Tools API base URL."""
         assert self.trimble_tools_api_base_url, "base URL should be resolved by validator"
         return self.trimble_tools_api_base_url
+
+    @property
+    def resolved_token_url(self) -> str:
+        """Non-optional accessor for the resolved Trimble ID token endpoint."""
+        assert self.trimble_token_url, "token URL should be resolved by validator"
+        return self.trimble_token_url
 
     @property
     def has_client_credentials(self) -> bool:
