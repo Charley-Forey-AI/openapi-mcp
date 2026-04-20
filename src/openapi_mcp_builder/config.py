@@ -70,11 +70,12 @@ class Settings(BaseSettings):
         ),
     )
     trimble_scopes: str | None = Field(
-        default=None,
+        default="openid tools",
         description=(
-            "Scope string for client_credentials. For Trimble, this is usually the "
-            "registered *client/application name* (e.g. 'openapi-mcp'), NOT a "
-            "space-separated list of OAuth scopes."
+            "Space-separated OAuth scopes requested from Trimble ID. 'openid tools' "
+            "is the minimum for the Agentic AI Platform Tools API. Add more scopes "
+            "(e.g. agents, kb, models, kb-ingest, profile) only if the client has "
+            "been granted them in the Trimble Cloud Console."
         ),
     )
 
