@@ -13,7 +13,10 @@ EnvName = Literal["dev", "stage", "prod"]
 _DEFAULT_BASE_URLS: dict[str, str] = {
     "dev": "https://tools.dev.trimble-ai.com",
     "stage": "https://tools.stage.trimble-ai.com",
-    "prod": "https://tools.ai.trimble.com",
+    # TODO: Trimble has not published a stable prod hostname yet.
+    # Fall back to stage so TRIMBLE_ENV=prod does not silently DNS-fail.
+    # Override with TRIMBLE_TOOLS_API_BASE_URL=<real-prod-host> when known.
+    "prod": "https://tools.stage.trimble-ai.com",
 }
 
 
