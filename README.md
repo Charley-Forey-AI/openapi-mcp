@@ -73,7 +73,8 @@ did not pass **`tool_filter`** or **`acknowledge_openapi_operation_limit=true`**
    the operation count the executor sees in the **uploaded file**. To pass a hard cap,
    use **`export_trimmed_openapi_spec`** (smaller document) + **`reupload_openapi_spec_text`**.
 3. Use **`search_openapi_operations`** to map a user phrase (e.g. “daily log”) to real
-   paths and tags, or the **[endpoint picker](apps/endpoint-picker/README.md)** app to
+   paths and tags, or the **[endpoint picker](apps/endpoint-picker/README.md)** app (build and
+   serve at `/endpoint-picker/`; see that README) to
    copy **`include_operation_keys`** for **`export_trimmed_openapi_spec`**. **`include_paths` in
    `tool_filter` must be regex**, not globs; run **`validate_openapi_tool_filter`**
    with **`strict=true`** when you need to fail on unknown keys or glob-like path patterns.
