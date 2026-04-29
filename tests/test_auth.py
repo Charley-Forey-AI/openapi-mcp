@@ -41,7 +41,7 @@ async def test_empty_bearer_header_falls_through_to_env():
 
 
 def test_extract_obo_reads_raw_http_request_not_fastmcp_filtered_dict():
-    """OBO must come from the Starlette request; FastMCP's get_http_headers() drops Authorization by default."""
+    """OBO from Starlette request; FastMCP get_http_headers omits Authorization by default."""
     req = MagicMock()
     req.headers.get.return_value = "Bearer obo-from-studio"
 

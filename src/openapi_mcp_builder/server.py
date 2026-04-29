@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastmcp import FastMCP
+from pydantic import ValidationError
 
 from openapi_mcp_builder.auth import AuthError, TokenProvider, extract_obo_header
 from openapi_mcp_builder.client import ToolsAPIClient, TrimbleToolsAPIError
@@ -24,10 +25,13 @@ from openapi_mcp_builder.config import get_settings
 from openapi_mcp_builder.models import (
     AuthConfig,
     OpenAPIServerUpdate,
+    ToolFilter,
 )
+from openapi_mcp_builder.spec_inspect import tool_filter_from_tags
 from openapi_mcp_builder.workflow import (
     ParseTimeoutError,
     SpecDownloadError,
+    analyze_openapi_spec_at_url,
     create_mcp_from_spec_url,
 )
 
@@ -35,10 +39,12 @@ mcp: FastMCP = FastMCP(
     name="openapi-mcp-builder",
     instructions=(
         "Turn any OpenAPI (Swagger) spec URL into a hosted MCP server on the "
-        "Trimble Agentic AI Platform. Use `create_mcp_from_openapi_url` to do "
-        "the full register -> upload -> parse flow and receive an MCP gateway "
-        "URL. Use the other tools to list, inspect, update, refresh, or "
-        "delete existing OpenAPI MCP servers."
+        "Trimble Agentic AI Platform. For large specs, call "
+        "`analyze_openapi_spec_url` first to see per-tag operation counts, then "
+        "pass a `tool_filter` (e.g. include_tags) to `create_mcp_from_openapi_url` "
+        "or `update_openapi_mcp_server` to stay under the platform operation cap. "
+        "Use `create_mcp_from_openapi_url` for the full register -> upload -> parse "
+        "flow. Other tools: list, inspect, update, refresh, delete, reupload."
     ),
 )
 
@@ -68,6 +74,66 @@ def _error(exc: Exception) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
+# Spec analysis (no Tools API; uses public spec URL only)
+# --------------------------------------------------------------------------- #
+
+
+@mcp.tool(
+    name="analyze_openapi_spec_url",
+    description=(
+        "Download and analyze an OpenAPI (or Swagger) spec URL. Returns per-tag "
+        "operation counts, sample operation keys, top path prefixes, and whether "
+        "the spec exceeds the typical platform tool limit. Use this before "
+        "create to choose a tool_filter. Optionally pass include_tags_estimate "
+        "to count how many operations match a tag set. Does not call the "
+        "Trimble Tools API."
+    ),
+)
+async def analyze_openapi_spec_url(
+    spec_url: str,
+    max_sample_ops_per_tag: int = 5,
+    path_prefix_top_n: int = 30,
+    include_tags_estimate: list[str] | None = None,
+) -> dict[str, Any]:
+    """Summarize a spec for planning include_tags / include_paths / include_operations."""
+    try:
+        settings = get_settings()
+        return await analyze_openapi_spec_at_url(
+            spec_url,
+            settings=settings,
+            max_sample_ops_per_tag=max_sample_ops_per_tag,
+            path_prefix_top_n=path_prefix_top_n,
+            include_tags_estimate=include_tags_estimate,
+        )
+    except SpecDownloadError as exc:
+        return _error(exc)
+    except ValueError as exc:
+        return _error(exc)
+
+
+@mcp.tool(
+    name="build_tool_filter_for_tags",
+    description=(
+        "Build a `tool_filter` object with `include_tags` for use with "
+        "`create_mcp_from_openapi_url` or `update_openapi_mcp_server`. The "
+        "Agentic platform applies this on parse so only those tagged operations "
+        "become MCP tools."
+    ),
+)
+async def build_tool_filter_for_tags(
+    include_tags: list[str],
+) -> dict[str, Any]:
+    if not include_tags or not [t for t in include_tags if t and t.strip()]:
+        return {
+            "ok": False,
+            "error": "ValueError",
+            "message": "include_tags must contain at least one non-empty tag name.",
+        }
+    cleaned = [t.strip() for t in include_tags if t and t.strip()]
+    return {"ok": True, "tool_filter": tool_filter_from_tags(cleaned)}
+
+
+# --------------------------------------------------------------------------- #
 # Main workflow tool
 # --------------------------------------------------------------------------- #
 
@@ -77,9 +143,10 @@ def _error(exc: Exception) -> dict[str, Any]:
         "End-to-end flow: download an OpenAPI spec from a URL, register a new "
         "OpenAPI MCP server on the Trimble Agentic AI Platform, upload the "
         "spec to the returned SAS URL, wait for parsing to finish, and return "
-        "the MCP gateway URL the agent can connect to. Defaults to "
-        "passthrough auth so the upstream API receives the end user's TID "
-        "on-behalf-of token at tool-invocation time."
+        "the MCP gateway URL the agent can connect to. Optional `tool_filter` "
+        "(e.g. include_tags) limits which operations become tools for large specs. "
+        "Defaults to passthrough auth so the upstream API receives the end user's "
+        "TID on-behalf-of token at tool-invocation time."
     ),
 )
 async def create_mcp_from_openapi_url(
@@ -97,6 +164,7 @@ async def create_mcp_from_openapi_url(
     header_format: str = "Bearer {token}",
     credential_ref: str | None = None,
     static_headers: dict[str, str] | None = None,
+    tool_filter: dict[str, Any] | None = None,
     wait_for_parse: bool = True,
 ) -> dict[str, Any]:
     """Register an OpenAPI spec as an MCP server and return its gateway URL."""
@@ -109,6 +177,9 @@ async def create_mcp_from_openapi_url(
             credential_ref=credential_ref,
             static_headers=static_headers,
         )
+        tf: ToolFilter | None = None
+        if tool_filter is not None:
+            tf = ToolFilter.model_validate(tool_filter)
         result = await create_mcp_from_spec_url(
             token=token,
             spec_url=spec_url,
@@ -121,6 +192,7 @@ async def create_mcp_from_openapi_url(
             required_scopes=required_scopes,
             icon_url=icon_url,
             auth_config=auth_cfg,
+            tool_filter=tf,
             wait_for_parse=wait_for_parse,
         )
     except (
@@ -129,6 +201,8 @@ async def create_mcp_from_openapi_url(
         TrimbleToolsAPIError,
         RuntimeError,
     ) as exc:
+        return _error(exc)
+    except (ValueError, ValidationError) as exc:
         return _error(exc)
 
     return {"ok": True, **result.as_dict()}
@@ -268,13 +342,15 @@ async def list_openapi_mcp_server_tools(server_id: str) -> dict[str, Any]:
         "Request a new SAS upload URL for an existing server, download the "
         "spec from `spec_url`, PUT it to Azure, and wait for re-parse. Use "
         "this to push a new version of the spec without creating a fresh "
-        "server."
+        "server. Optional `tool_filter` is applied on the same PATCH (e.g. "
+        "after `analyze_openapi_spec_url` to limit operations)."
     ),
 )
 async def reupload_openapi_spec_from_url(
     server_id: str,
     spec_url: str,
     if_match: str | None = None,
+    tool_filter: dict[str, Any] | None = None,
     wait_for_parse: bool = True,
 ) -> dict[str, Any]:
     try:
@@ -285,11 +361,18 @@ async def reupload_openapi_spec_from_url(
             download_spec,
         )
         spec_bytes, content_type = await download_spec(spec_url, settings.max_spec_bytes)
+        patch: OpenAPIServerUpdate
+        if tool_filter is not None:
+            patch = OpenAPIServerUpdate(
+                tool_filter=ToolFilter.model_validate(tool_filter),
+            )
+        else:
+            patch = OpenAPIServerUpdate()
         async with ToolsAPIClient() as client:
             server = await client.update_server(
                 token,
                 server_id,
-                OpenAPIServerUpdate(),
+                patch,
                 reupload=True,
                 if_match=if_match,
             )
@@ -310,6 +393,8 @@ async def reupload_openapi_spec_from_url(
         TrimbleToolsAPIError,
         RuntimeError,
     ) as exc:
+        return _error(exc)
+    except (ValueError, ValidationError) as exc:
         return _error(exc)
     return {
         "ok": True,

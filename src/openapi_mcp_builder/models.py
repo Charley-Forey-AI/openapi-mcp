@@ -78,6 +78,7 @@ class OpenAPIServerCreate(BaseModel):
     viewers: list[str] = Field(default_factory=list)
     required_scopes: list[str] = Field(default_factory=list)
     icon_url: str | None = None
+    tool_filter: ToolFilter | None = None
 
 
 class OpenAPIServerUpdate(BaseModel):

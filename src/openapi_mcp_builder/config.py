@@ -95,6 +95,8 @@ class Settings(BaseSettings):
     parse_poll_timeout_seconds: float = 120.0
     parse_poll_interval_seconds: float = 2.0
     max_spec_bytes: int = 1_048_576_000  # ~1000 MiB
+    # Executor limit (e.g. OPENAPI_MAX_SPEC_OPERATIONS); used for spec analysis hints.
+    platform_max_openapi_operations: int = 50
 
     @model_validator(mode="after")
     def _resolve_urls(self) -> Settings:

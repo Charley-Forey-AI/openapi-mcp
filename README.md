@@ -7,8 +7,10 @@ ready-to-use MCP gateway URL.
 Under the hood it drives the platform's experimental `/v1/openapi-servers/*`
 endpoints:
 
-| Tool                                    | Endpoint                                          |
+| Tool                                    | Endpoint / behavior                               |
 | --------------------------------------- | ------------------------------------------------- |
+| `analyze_openapi_spec_url`              | Local: GET spec URL, summarize operations by tag  |
+| `build_tool_filter_for_tags`            | Build `{"include_tags":[...]}` for tool_filter    |
 | `create_mcp_from_openapi_url`           | `POST /v1/openapi-servers` + SAS PUT + poll       |
 | `list_openapi_mcp_servers`              | `GET  /v1/openapi-servers`                        |
 | `get_openapi_mcp_server`                | `GET  /v1/openapi-servers/{id}`                   |
@@ -33,6 +35,16 @@ user -> MCP client (e.g. Trimble Agent Studio)
 ```
 
 The `gateway_url` in the final response is the MCP URL the agent connects to.
+
+### Large specs (operation limits)
+
+The executor enforces a maximum number of OpenAPI operations per server (e.g. 50). If
+registration or parse fails with `OPENAPI_MAX_SPEC_OPERATIONS`, use **`analyze_openapi_spec_url`**
+on the same `spec_url` to see per-tag counts and path prefixes, then pass a
+**`tool_filter`** (e.g. `include_tags` from **`build_tool_filter_for_tags`**) to
+**`create_mcp_from_openapi_url`**, or **`update_openapi_mcp_server` / `reupload_openapi_spec_from_url`**
+so the next parse only exposes the selected operations. Set **`PLATFORM_MAX_OPENAPI_OPERATIONS`**
+in `.env` to match the hint shown in platform errors (default 50).
 
 ## Authentication (Trimble ID OBO)
 
@@ -165,10 +177,12 @@ openapi-mcp/
 │   ├── client.py          # Async HTTP client for the Tools API
 │   ├── auth.py            # OBO passthrough + fallbacks
 │   ├── config.py          # Pydantic Settings
-│   └── models.py          # Request / response schemas
+│   ├── models.py          # Request / response schemas
+│   └── spec_inspect.py   # Per-tag / path operation summaries (tool_filter)
 └── tests/
     ├── conftest.py
     ├── test_auth.py
+    ├── test_spec_inspect.py
     └── test_workflow.py   # respx-mocked end-to-end flow
 ```
 

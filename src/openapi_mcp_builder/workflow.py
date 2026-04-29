@@ -18,6 +18,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 import yaml
@@ -28,6 +29,13 @@ from openapi_mcp_builder.models import (
     AuthConfig,
     OpenAPIServer,
     OpenAPIServerCreate,
+    ToolFilter,
+)
+from openapi_mcp_builder.spec_inspect import (
+    build_summary,
+    count_operations_matching_any_tag,
+    enumerate_operations,
+    parse_openapi_spec_bytes,
 )
 
 _TERMINAL_PARSE_STATES = {"success", "failed", "error"}
@@ -138,6 +146,38 @@ def _classify_spec(body: bytes, url: str, header_ct: str) -> str:
     return "application/yaml"
 
 
+async def analyze_openapi_spec_at_url(
+    spec_url: str,
+    *,
+    settings: Settings | None = None,
+    max_sample_ops_per_tag: int = 5,
+    path_prefix_top_n: int = 30,
+    include_tags_estimate: list[str] | None = None,
+) -> dict[str, Any]:
+    """Download a spec, parse it, and return tag/path summaries for tool_filter planning."""
+    settings = settings or get_settings()
+    spec_bytes, _ = await download_spec(spec_url, settings.max_spec_bytes)
+    spec = parse_openapi_spec_bytes(spec_bytes)
+    ops = enumerate_operations(spec)
+    lim = settings.platform_max_openapi_operations
+    summary = build_summary(
+        spec,
+        operations=ops,
+        platform_max_operations=lim,
+        max_sample_ops_per_tag=max(0, max_sample_ops_per_tag),
+        path_prefix_top_n=max(0, path_prefix_top_n),
+    )
+    out: dict[str, Any] = {**summary, "spec_url": spec_url, "spec_bytes": len(spec_bytes)}
+    if include_tags_estimate is not None and len(include_tags_estimate) > 0:
+        n = count_operations_matching_any_tag(ops, include_tags_estimate)
+        out["include_tags_estimate"] = {
+            "tags": include_tags_estimate,
+            "matching_operation_count": n,
+            "fits_platform_limit": n <= lim,
+        }
+    return out
+
+
 async def create_mcp_from_spec_url(
     *,
     token: str,
@@ -151,6 +191,7 @@ async def create_mcp_from_spec_url(
     required_scopes: list[str] | None = None,
     icon_url: str | None = None,
     auth_config: AuthConfig | None = None,
+    tool_filter: ToolFilter | None = None,
     wait_for_parse: bool = True,
     settings: Settings | None = None,
     client: ToolsAPIClient | None = None,
@@ -159,6 +200,9 @@ async def create_mcp_from_spec_url(
 
     If ``base_url`` is omitted, we derive it from the first ``servers[0].url``
     entry of the downloaded spec.
+
+    Pass ``tool_filter`` to limit which operations become MCP tools (e.g. stay
+    under the platform operation cap) when the Tools API accepts it on create.
     """
     settings = settings or get_settings()
 
@@ -184,6 +228,7 @@ async def create_mcp_from_spec_url(
         required_scopes=required_scopes or [],
         icon_url=icon_url,
         auth_config=auth_config,
+        tool_filter=tool_filter,
     )
 
     owns_client = client is None
