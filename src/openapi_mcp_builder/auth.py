@@ -134,23 +134,25 @@ def _strip_bearer(raw: str) -> str | None:
 def extract_obo_header() -> str | None:
     """Extract the caller's Authorization header from the active HTTP request.
 
+    FastMCP's ``get_http_headers()`` omits ``Authorization`` by default so it
+    is not accidentally forwarded downstream. The underlying Starlette request
+    still carries the header; read it here for on-behalf-of passthrough from
+    Trimble Agent Studio.
+
     Returns None when the MCP is running over stdio or the header is absent.
     """
     try:
-        from fastmcp.server.dependencies import get_http_headers
+        from fastmcp.server.dependencies import get_http_request
     except ImportError:  # pragma: no cover - fastmcp always installed
         return None
 
     try:
-        headers = get_http_headers()
+        request = get_http_request()
     except Exception:
         return None
 
-    if not headers:
-        return None
-
-    for key in ("authorization", "Authorization", "AUTHORIZATION"):
-        value = headers.get(key)
-        if value:
-            return value
+    # Starlette Headers: lookup is case-insensitive.
+    value = request.headers.get("authorization")
+    if value:
+        return value
     return None
