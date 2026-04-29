@@ -226,7 +226,10 @@ async def test_create_preflight_skips_when_tool_filter_set(settings: Settings):
         "servers": [{"url": "https://api.demo.example.com"}],
         "paths": {
             f"/p{i}": {
-                "get": {"responses": {"200": {"description": "ok"}}},
+                "get": {
+                    "tags": ["x"] if i == 0 else ["y"],
+                    "responses": {"200": {"description": "ok"}},
+                },
             }
             for i in range(3)
         },
@@ -249,7 +252,13 @@ async def test_create_preflight_skips_when_tool_filter_set(settings: Settings):
                 },
             )
         )
-        router.put("https://blob.test/sas3").mock(return_value=httpx.Response(201))
+        put_bodies: list[bytes] = []
+
+        def _capture_put(request: httpx.Request) -> httpx.Response:
+            put_bodies.append(request.content)
+            return httpx.Response(201)
+
+        router.put("https://blob.test/sas3").mock(side_effect=_capture_put)
 
         async with ToolsAPIClient(settings=s2) as client:
             result = await create_mcp_from_spec_url(
@@ -263,3 +272,73 @@ async def test_create_preflight_skips_when_tool_filter_set(settings: Settings):
             )
 
     assert result.server.id == "srv_tf"
+    assert result.client_spec_trimmed is True
+    assert result.original_operation_count == 3
+    assert result.trimmed_operation_count == 1
+    assert put_bodies
+    uploaded = json.loads(put_bodies[0].decode("utf-8"))
+    assert len(uploaded.get("paths", {})) == 1
+
+
+async def test_create_client_trim_disabled_uploads_full_spec(settings: Settings):
+    s2 = settings.model_copy(
+        update={
+            "platform_max_openapi_operations": 1,
+            "create_auto_trim_on_tool_filter": False,
+        }
+    )
+    big_spec = {
+        "openapi": "3.0.0",
+        "info": {"title": "B", "version": "1"},
+        "servers": [{"url": "https://api.demo.example.com"}],
+        "paths": {
+            f"/p{i}": {
+                "get": {
+                    "tags": ["x"],
+                    "responses": {"200": {"description": "ok"}},
+                },
+            }
+            for i in range(3)
+        },
+    }
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://example.com/nofit.json").mock(
+            return_value=httpx.Response(200, text=json.dumps(big_spec))
+        )
+        put_bodies: list[bytes] = []
+
+        def _capture_put(request: httpx.Request) -> httpx.Response:
+            put_bodies.append(request.content)
+            return httpx.Response(201)
+
+        router.post("https://tools.test.local/v1/openapi-servers").mock(
+            return_value=httpx.Response(
+                201,
+                json={
+                    "id": "srv_nofit",
+                    "name": "demo",
+                    "base_url": "https://api.demo.example.com",
+                    "parse_status": "success",
+                    "path": "/openapi/x",
+                    "namespace": "openapi",
+                    "spec_upload_url": "https://blob.test/sasnofit",
+                },
+            )
+        )
+        router.put("https://blob.test/sasnofit").mock(side_effect=_capture_put)
+
+        async with ToolsAPIClient(settings=s2) as client:
+            result = await create_mcp_from_spec_url(
+                token="env-token",
+                spec_url="https://example.com/nofit.json",
+                name="demo",
+                settings=s2,
+                client=client,
+                tool_filter=ToolFilter(include_tags=["x"]),
+                wait_for_parse=False,
+            )
+
+    assert result.client_spec_trimmed is False
+    assert put_bodies
+    assert len(json.loads(put_bodies[0].decode("utf-8"))["paths"]) == 3
+    assert result.server.id == "srv_nofit"

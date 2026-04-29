@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 def canonical_operation_key(method: str, path: str) -> str:
     """``METHOD /path`` with method uppercased, path normalized like spec dict keys."""
     m = (method or "get").strip().lower()

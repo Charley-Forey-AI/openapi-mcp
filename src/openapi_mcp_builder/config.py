@@ -105,6 +105,12 @@ class Settings(BaseSettings):
         default=False,
         description="Set CREATE_PREFLIGHT_ENFORCE=1 in the environment to enable.",
     )
+    # When true, if the spec exceeds the executor op cap, apply the same filters as tool_filter
+    # locally (trim paths) before uploading so parsing sees <= platform_max operations.
+    create_auto_trim_on_tool_filter: bool = Field(
+        default=True,
+        description="Set CREATE_AUTO_TRIM_ON_TOOL_FILTER=0 to disable client-side trim on create.",
+    )
 
     @model_validator(mode="after")
     def _resolve_urls(self) -> Settings:

@@ -31,12 +31,14 @@ from openapi_mcp_builder.models import (
     OpenAPIServerCreate,
     ToolFilter,
 )
+from openapi_mcp_builder.operation_key import normalize_operation_key_input
 from openapi_mcp_builder.spec_inspect import (
     build_summary,
     count_operations_matching_any_tag,
     enumerate_operations,
     parse_openapi_spec_bytes,
 )
+from openapi_mcp_builder.spec_trim import spec_json_dumps_min, trim_openapi_document
 
 _TERMINAL_PARSE_STATES = {"success", "failed", "error"}
 _PENDING_PARSE_STATES = {"pending", "queued", "parsing"}
@@ -62,9 +64,13 @@ class CreateResult:
     waited_seconds: float
     spec_bytes: int
     spec_content_type: str
+    client_spec_trimmed: bool = False
+    original_operation_count: int | None = None
+    trimmed_operation_count: int | None = None
+    client_trim_note: str | None = None
 
     def as_dict(self) -> dict:
-        return {
+        d: dict[str, Any] = {
             "id": self.server.id,
             "name": self.server.name,
             "parse_status": self.parse_status,
@@ -80,6 +86,13 @@ class CreateResult:
             "spec_content_type": self.spec_content_type,
             "waited_seconds": round(self.waited_seconds, 2),
         }
+        if self.client_spec_trimmed:
+            d["client_spec_trimmed"] = True
+            d["original_operation_count"] = self.original_operation_count
+            d["trimmed_operation_count"] = self.trimmed_operation_count
+            if self.client_trim_note:
+                d["client_trim_note"] = self.client_trim_note
+        return d
 
 
 async def download_spec(url: str, max_bytes: int) -> tuple[bytes, str]:
@@ -178,6 +191,127 @@ async def analyze_openapi_spec_at_url(
     return out
 
 
+def _nonempty_str_list(v: list[str] | None) -> list[str]:
+    if not v:
+        return []
+    return [str(x).strip() for x in v if str(x).strip()]
+
+
+def _operation_ids_to_keys(
+    spec: dict[str, Any], identifiers: list[str]
+) -> list[str]:
+    """Map tool_filter ``include_operations`` entries to ``GET /path`` keys."""
+    by_id: dict[str, str] = {}
+    for op in enumerate_operations(spec):
+        oid = op.get("operation_id")
+        if isinstance(oid, str) and oid.strip():
+            by_id[oid.strip()] = str(op["operation_key"])
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in identifiers:
+        s = str(raw).strip()
+        if not s:
+            continue
+        k = normalize_operation_key_input(s)
+        if k:
+            if k not in seen:
+                seen.add(k)
+                out.append(k)
+        elif s in by_id:
+            k2 = by_id[s]
+            if k2 not in seen:
+                seen.add(k2)
+                out.append(k2)
+    return out
+
+
+def _client_trim_bytes_for_create(
+    spec: dict[str, Any],
+    tool_filter: ToolFilter,
+) -> tuple[dict[str, Any], int, int]:
+    """Return trimmed spec and before/after operation counts, or raise SpecDownloadError."""
+    tags = _nonempty_str_list(tool_filter.include_tags)
+    paths = _nonempty_str_list(tool_filter.include_paths)
+    op_ids = _nonempty_str_list(tool_filter.include_operations)
+    n_modes = sum(1 for x in (tags, paths, op_ids) if x)
+    if n_modes == 0:
+        raise SpecDownloadError(
+            "The OpenAPI file has more operations than the platform parser allows, and "
+            "`tool_filter` did not include any of include_tags, include_paths, or "
+            "include_operations, so the spec could not be trimmed before upload. "
+            "Use export_trimmed_openapi_spec + reupload_openapi_spec_text, or add "
+            "inclusion filters to tool_filter."
+        )
+    if op_ids and (tags or paths):
+        raise SpecDownloadError(
+            "Client-side trim on create does not support mixing include_operations with "
+            "include_tags or include_paths. Use export_trimmed_openapi_spec + "
+            "reupload_openapi_spec_text, or use only one inclusion style in tool_filter."
+        )
+    if op_ids:
+        keys = _operation_ids_to_keys(spec, op_ids)
+        if not keys:
+            raise SpecDownloadError(
+                "include_operations could not be resolved to method+path keys or "
+                "operationId values in the spec."
+            )
+        trimmed, before, after = trim_openapi_document(
+            spec, include_operation_keys=keys
+        )
+        return trimmed, before, after
+    trimmed, before, after = trim_openapi_document(
+        spec,
+        include_tags=tags or None,
+        path_substrings=paths or None,
+    )
+    return trimmed, before, after
+
+
+def _maybe_client_trim_spec_for_upload(
+    spec_bytes: bytes,
+    content_type: str,
+    tool_filter: ToolFilter | None,
+    *,
+    platform_max: int,
+    auto_trim: bool,
+) -> tuple[bytes, str, int, int, bool, str | None]:
+    """If needed, return JSON bytes of a tag/path/op-list-trimmed spec for SAS upload.
+
+    The executor enforces operation counts on the **uploaded** document, often before
+    applying tool_filter, so we must send a smaller file when over the cap.
+    """
+    spec = parse_openapi_spec_bytes(spec_bytes)
+    n = len(enumerate_operations(spec))
+    if n <= platform_max or not auto_trim or tool_filter is None:
+        return spec_bytes, content_type, n, n, False, None
+    try:
+        trimmed, before, after = _client_trim_bytes_for_create(spec, tool_filter)
+    except (ValueError, SpecDownloadError) as exc:
+        if isinstance(exc, ValueError):
+            # trim_openapi_document validation
+            raise SpecDownloadError(
+                f"Could not apply client-side trim from tool_filter: {exc}"
+            ) from exc
+        raise
+    if after == 0:
+        raise SpecDownloadError(
+            "After applying tool_filter, no operations remain in the spec. "
+            "Widen include_tags, include_paths, or include_operations."
+        )
+    if after > platform_max:
+        raise SpecDownloadError(
+            f"After applying tool_filter, the spec still has {after} operations "
+            f"(limit {platform_max}). Use export_trimmed_openapi_spec to narrow further "
+            f"(e.g. include_operation_keys) or reupload_openapi_spec_text with a smaller file."
+        )
+    out = spec_json_dumps_min(trimmed).encode("utf-8")
+    note = (
+        "Client-trimmed the spec before upload so the parser sees "
+        f"{after} operation(s) (raw file had {before}). tool_filter is still sent to the API."
+    )
+    return out, "application/json", before, after, True, note
+
+
 async def create_mcp_from_spec_url(
     *,
     token: str,
@@ -209,8 +343,13 @@ async def create_mcp_from_spec_url(
     operations than ``Settings.platform_max_openapi_operations`` and
     ``tool_filter`` is not set, this function raises :class:`SpecDownloadError`
     unless ``acknowledge_openapi_operation_limit`` is true (avoids a doomed
-    register/upload/parse that may fail on the executor cap). ``tool_filter``
-    alone is often *not* enough; prefer trimming the spec first.
+    register/upload/parse that may fail on the executor cap).
+
+    When ``Settings.create_auto_trim_on_tool_filter`` is true (default) and
+    ``tool_filter`` includes at least one of ``include_tags``, ``include_paths``,
+    or ``include_operations``, the document is **trimmed locally** before the
+    SAS upload whenever the raw operation count exceeds the cap (the platform
+    parser typically counts the uploaded file before applying tool_filter).
     """
     settings = settings or get_settings()
 
@@ -231,8 +370,27 @@ async def create_mcp_from_spec_url(
                 "`search_openapi_operations`, then `export_trimmed_openapi_spec` and "
                 "`reupload_openapi_spec_text` (or re-create after trimming). To skip this "
                 "local check, pass acknowledge_openapi_operation_limit=true, or set "
-                "a tool_filter, or set CREATE_PREFLIGHT_ENFORCE=false."
+                "a tool_filter with include_tags/include_paths/include_operations "
+                "(client-side trim on create), or set CREATE_PREFLIGHT_ENFORCE=false."
             )
+
+    client_spec_trimmed = False
+    original_operation_count: int | None = None
+    trimmed_operation_count: int | None = None
+    client_trim_note: str | None = None
+    if tool_filter is not None and settings.create_auto_trim_on_tool_filter:
+        spec_bytes, content_type, b0, b1, client_spec_trimmed, client_trim_note = (
+            _maybe_client_trim_spec_for_upload(
+                spec_bytes,
+                content_type,
+                tool_filter,
+                platform_max=settings.platform_max_openapi_operations,
+                auto_trim=True,
+            )
+        )
+        if client_spec_trimmed:
+            original_operation_count = b0
+            trimmed_operation_count = b1
 
     if base_url is None:
         base_url = _infer_base_url(spec_bytes) or ""
@@ -291,6 +449,10 @@ async def create_mcp_from_spec_url(
         waited_seconds=waited,
         spec_bytes=len(spec_bytes),
         spec_content_type=content_type,
+        client_spec_trimmed=client_spec_trimmed,
+        original_operation_count=original_operation_count,
+        trimmed_operation_count=trimmed_operation_count,
+        client_trim_note=client_trim_note,
     )
 
 
