@@ -21,11 +21,20 @@ def main() -> None:
     transport = settings.mcp_transport.strip().lower()
 
     log = logging.getLogger("openapi_mcp_builder")
+    base = settings.trimble_tools_api_base_url or ""
     log.info(
-        "Starting openapi-mcp-builder on transport=%s base=%s",
+        "Starting openapi-mcp-builder on transport=%s TRIMBLE_ENV=%s base=%s",
         transport,
-        settings.trimble_tools_api_base_url,
+        settings.trimble_env,
+        base,
     )
+    if "tools.ai.trimble.com" in base:
+        log.warning(
+            "Tools API base URL is tools.ai.trimble.com; the preview OpenAPI "
+            "routes /v1/openapi-servers* are not deployed there (HTTP 404). "
+            "Unset TRIMBLE_TOOLS_API_BASE_URL and use TRIMBLE_ENV=stage, or set "
+            "TRIMBLE_TOOLS_API_BASE_URL=https://tools.stage.trimble-ai.com"
+        )
 
     if transport == "stdio":
         mcp.run(transport="stdio")
