@@ -10,7 +10,9 @@ endpoints:
 | Tool                                    | Endpoint / behavior                               |
 | --------------------------------------- | ------------------------------------------------- |
 | `analyze_openapi_spec_url`              | Local: GET spec URL, summarize operations by tag  |
-| `build_tool_filter_for_tags`            | Build `{"include_tags":[...]}` for tool_filter    |
+| `export_trimmed_openapi_spec`          | Shrink the document (tag/path) for reupload       |
+| `reupload_openapi_spec_text`            | Reupload spec body without a public URL            |
+| `build_tool_filter_for_tags`            | Build `{"include_tags":[...]}` for tool_filter     |
 | `create_mcp_from_openapi_url`           | `POST /v1/openapi-servers` + SAS PUT + poll       |
 | `list_openapi_mcp_servers`              | `GET  /v1/openapi-servers`                        |
 | `get_openapi_mcp_server`                | `GET  /v1/openapi-servers/{id}`                   |
@@ -38,13 +40,22 @@ The `gateway_url` in the final response is the MCP URL the agent connects to.
 
 ### Large specs (operation limits)
 
-The executor enforces a maximum number of OpenAPI operations per server (e.g. 50). If
-registration or parse fails with `OPENAPI_MAX_SPEC_OPERATIONS`, use **`analyze_openapi_spec_url`**
-on the same `spec_url` to see per-tag counts and path prefixes, then pass a
-**`tool_filter`** (e.g. `include_tags` from **`build_tool_filter_for_tags`**) to
-**`create_mcp_from_openapi_url`**, or **`update_openapi_mcp_server` / `reupload_openapi_spec_from_url`**
-so the next parse only exposes the selected operations. Set **`PLATFORM_MAX_OPENAPI_OPERATIONS`**
-in `.env` to match the hint shown in platform errors (default 50).
+The executor enforces a maximum number of OpenAPI operations per server (e.g. 50). A
+**`tool_filter` alone** may *not* help if the platform still counts all operations in the
+uploaded file before the filter is applied. In that case you must use a **physically
+smaller** spec (fewer path operations in the document):
+
+1. Run **`export_trimmed_openapi_spec`** on the `spec_url` with **`include_tags`**
+   and/or **`path_substrings`** (literal substrings in the path, e.g. `dailyLog` for
+   ProjectSight). This returns a trimmed OpenAPI JSON string and `trimmed_operation_count`.
+2. Call **`reupload_openapi_spec_text`** with that JSON as **`spec_text`** on the existing
+   server (no Gist or extra hosting required).
+
+For filters that the platform *does* apply to the live parse, use **`tool_filter`**
+(`include_tags`, **`include_paths` as regex** such as `.*[Dd]ailyLog.*` — *not* glob
+patterns like `*daily*`, which are invalid regex). Use **`analyze_openapi_spec_url`**
+per-tag counts and set **`PLATFORM_MAX_OPENAPI_OPERATIONS`** / **`MAX_TRIMMED_SPEC_EXPORT_BYTES`**
+in `.env` for hints and export size.
 
 ## Authentication (Trimble ID OBO)
 
@@ -178,11 +189,13 @@ openapi-mcp/
 │   ├── auth.py            # OBO passthrough + fallbacks
 │   ├── config.py          # Pydantic Settings
 │   ├── models.py          # Request / response schemas
-│   └── spec_inspect.py   # Per-tag / path operation summaries (tool_filter)
+│   ├── spec_inspect.py   # Per-tag / path operation summaries (tool_filter)
+│   └── spec_trim.py      # Shrink paths in a spec for reupload
 └── tests/
     ├── conftest.py
     ├── test_auth.py
     ├── test_spec_inspect.py
+    ├── test_spec_trim.py
     └── test_workflow.py   # respx-mocked end-to-end flow
 ```
 

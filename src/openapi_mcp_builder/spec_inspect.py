@@ -155,9 +155,11 @@ def build_summary(
             "description": (
                 "Use `tool_filter` on create (if supported) or "
                 "`update_openapi_mcp_server` with `tool_filter` to re-parse. "
-                "Fields: include_tags, exclude_tags, include_paths, exclude_paths, "
-                "include_operations, exclude_operations. "
-                "include_operations often uses `operation_key` like `GET /v1/pets`."
+                "Fields: include_tags, exclude_tags, include_paths (must be valid "
+                "regex, not globs — e.g. use `.*dailyLog.*` not `*daily*`), "
+                "include_operations (often `GET /v1/pets`). If the executor still "
+                "counts all operations in the uploaded file, use "
+                "`export_trimmed_openapi_spec` + `reupload_openapi_spec_text`."
             ),
         },
     }

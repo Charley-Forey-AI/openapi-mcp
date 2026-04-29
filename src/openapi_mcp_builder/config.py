@@ -97,6 +97,8 @@ class Settings(BaseSettings):
     max_spec_bytes: int = 1_048_576_000  # ~1000 MiB
     # Executor limit (e.g. OPENAPI_MAX_SPEC_OPERATIONS); used for spec analysis hints.
     platform_max_openapi_operations: int = 50
+    # Inline export cap for export_trimmed_openapi_spec; use reupload_openapi_spec_text if omitted.
+    max_trimmed_spec_export_bytes: int = 2_000_000
 
     @model_validator(mode="after")
     def _resolve_urls(self) -> Settings:

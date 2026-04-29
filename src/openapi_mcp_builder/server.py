@@ -14,8 +14,10 @@ without custom content block handling.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
+import yaml
 from fastmcp import FastMCP
 from pydantic import ValidationError
 
@@ -27,12 +29,14 @@ from openapi_mcp_builder.models import (
     OpenAPIServerUpdate,
     ToolFilter,
 )
-from openapi_mcp_builder.spec_inspect import tool_filter_from_tags
+from openapi_mcp_builder.spec_inspect import parse_openapi_spec_bytes, tool_filter_from_tags
+from openapi_mcp_builder.spec_trim import spec_json_dumps_min, trim_openapi_document
 from openapi_mcp_builder.workflow import (
     ParseTimeoutError,
     SpecDownloadError,
     analyze_openapi_spec_at_url,
     create_mcp_from_spec_url,
+    download_spec,
 )
 
 mcp: FastMCP = FastMCP(
@@ -40,11 +44,12 @@ mcp: FastMCP = FastMCP(
     instructions=(
         "Turn any OpenAPI (Swagger) spec URL into a hosted MCP server on the "
         "Trimble Agentic AI Platform. For large specs, call "
-        "`analyze_openapi_spec_url` first to see per-tag operation counts, then "
-        "pass a `tool_filter` (e.g. include_tags) to `create_mcp_from_openapi_url` "
-        "or `update_openapi_mcp_server` to stay under the platform operation cap. "
-        "Use `create_mcp_from_openapi_url` for the full register -> upload -> parse "
-        "flow. Other tools: list, inspect, update, refresh, delete, reupload."
+        "`analyze_openapi_spec_url` first. If the executor still counts all "
+        "operations in the upload (tool_filter alone is not enough), use "
+        "`export_trimmed_openapi_spec` then `reupload_openapi_spec_text` with a "
+        "smaller document. `include_paths` in tool_filter must be valid regex "
+        "(not glob). Use `create_mcp_from_openapi_url` for register -> upload -> parse; "
+        "also list, inspect, update, refresh, delete, reupload."
     ),
 )
 
@@ -57,6 +62,20 @@ async def _resolve_token() -> str:
         return await _token_provider.get_bearer_token(extract_obo_header())
     except AuthError as exc:
         raise RuntimeError(str(exc)) from exc
+
+
+def _spec_text_to_bytes_and_content_type(spec_text: str) -> tuple[bytes, str]:
+    """Return UTF-8 bytes and content type for a JSON or YAML OpenAPI document."""
+    t = spec_text.strip()
+    try:
+        json.loads(t)
+        return spec_text.encode("utf-8"), "application/json"
+    except json.JSONDecodeError:
+        try:
+            yaml.safe_load(t)
+        except yaml.YAMLError as exc:
+            raise ValueError(f"Spec is not valid JSON or YAML: {exc}") from exc
+        return spec_text.encode("utf-8"), "application/yaml"
 
 
 def _error(exc: Exception) -> dict[str, Any]:
@@ -131,6 +150,57 @@ async def build_tool_filter_for_tags(
         }
     cleaned = [t.strip() for t in include_tags if t and t.strip()]
     return {"ok": True, "tool_filter": tool_filter_from_tags(cleaned)}
+
+
+@mcp.tool(
+    name="export_trimmed_openapi_spec",
+    description=(
+        "Download a spec from spec_url and return a NEW OpenAPI document with "
+        "only operations that match include_tags and/or path_substrings (literal "
+        "substring on the path, case-insensitive). Use when tool_filter does not "
+        "reduce the executor operation count—upload the returned spec via "
+        "`reupload_openapi_spec_text`. If spec_json is omitted, the export was "
+        "too large for the inline field; call this with narrower filters or use "
+        "a local script. path_substrings example for daily logs: [\"dailyLog\"]."
+    ),
+)
+async def export_trimmed_openapi_spec(
+    spec_url: str,
+    include_tags: list[str] | None = None,
+    path_substrings: list[str] | None = None,
+) -> dict[str, Any]:
+    try:
+        settings = get_settings()
+        spec_bytes, _ = await download_spec(spec_url, settings.max_spec_bytes)
+        spec = parse_openapi_spec_bytes(spec_bytes)
+        trimmed, before, after = trim_openapi_document(
+            spec, include_tags=include_tags, path_substrings=path_substrings
+        )
+        out: dict[str, Any] = {
+            "ok": True,
+            "spec_url": spec_url,
+            "original_operation_count": before,
+            "trimmed_operation_count": after,
+            "under_platform_limit": after <= settings.platform_max_openapi_operations,
+        }
+        text = spec_json_dumps_min(trimmed)
+        raw = text.encode("utf-8")
+        if len(raw) > settings.max_trimmed_spec_export_bytes:
+            out["spec_json"] = None
+            out["export_omitted"] = True
+            out["export_bytes"] = len(raw)
+            out["max_trimmed_spec_export_bytes"] = settings.max_trimmed_spec_export_bytes
+            out["note"] = (
+                "Response too large: narrow include_tags/path_substrings, or "
+                "increase max_trimmed_spec_export_bytes; you can still reupload "
+                "a locally trimmed file with reupload_openapi_spec_text."
+            )
+        else:
+            out["spec_json"] = text
+            out["export_omitted"] = False
+        return out
+    except (SpecDownloadError, ValueError) as exc:
+        return _error(exc)
 
 
 # --------------------------------------------------------------------------- #
@@ -395,6 +465,70 @@ async def reupload_openapi_spec_from_url(
     ) as exc:
         return _error(exc)
     except (ValueError, ValidationError) as exc:
+        return _error(exc)
+    return {
+        "ok": True,
+        "server": server.model_dump(mode="json"),
+        "spec_bytes": len(spec_bytes),
+        "spec_content_type": content_type,
+    }
+
+
+@mcp.tool(
+    name="reupload_openapi_spec_text",
+    description=(
+        "Request a reupload SAS URL, then PUT the given spec body (JSON or YAML "
+        "string) without hosting a URL. Use with `export_trimmed_openapi_spec` "
+        "when the full spec is too large for the executor and tool_filter does "
+        "not apply before the operation count check."
+    ),
+)
+async def reupload_openapi_spec_text(
+    server_id: str,
+    spec_text: str,
+    if_match: str | None = None,
+    tool_filter: dict[str, Any] | None = None,
+    wait_for_parse: bool = True,
+) -> dict[str, Any]:
+    try:
+        spec_bytes, content_type = _spec_text_to_bytes_and_content_type(spec_text)
+        token = await _resolve_token()
+        settings = get_settings()
+        from openapi_mcp_builder.workflow import _poll_parse_status
+
+        patch: OpenAPIServerUpdate
+        if tool_filter is not None:
+            patch = OpenAPIServerUpdate(
+                tool_filter=ToolFilter.model_validate(tool_filter),
+            )
+        else:
+            patch = OpenAPIServerUpdate()
+        async with ToolsAPIClient() as client:
+            server = await client.update_server(
+                token,
+                server_id,
+                patch,
+                reupload=True,
+                if_match=if_match,
+            )
+            if not server.spec_upload_url:
+                raise TrimbleToolsAPIError(
+                    500,
+                    "Platform did not return a fresh `spec_upload_url`.",
+                    body=server.model_dump(),
+                )
+            await client.upload_spec_to_sas_url(
+                server.spec_upload_url, spec_bytes, content_type=content_type
+            )
+            if wait_for_parse:
+                server = await _poll_parse_status(client, token, server.id, settings)
+    except (
+        ParseTimeoutError,
+        TrimbleToolsAPIError,
+        RuntimeError,
+        ValueError,
+        ValidationError,
+    ) as exc:
         return _error(exc)
     return {
         "ok": True,
