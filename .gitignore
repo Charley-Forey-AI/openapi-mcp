@@ -9,6 +9,7 @@ env/
 .ruff_cache/
 dist/
 build/
+node_modules/
 .coverage
 htmlcov/
 .vscode/

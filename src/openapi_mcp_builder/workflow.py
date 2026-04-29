@@ -193,6 +193,7 @@ async def create_mcp_from_spec_url(
     auth_config: AuthConfig | None = None,
     tool_filter: ToolFilter | None = None,
     wait_for_parse: bool = True,
+    acknowledge_openapi_operation_limit: bool = False,
     settings: Settings | None = None,
     client: ToolsAPIClient | None = None,
 ) -> CreateResult:
@@ -203,10 +204,35 @@ async def create_mcp_from_spec_url(
 
     Pass ``tool_filter`` to limit which operations become MCP tools (e.g. stay
     under the platform operation cap) when the Tools API accepts it on create.
+
+    When ``Settings.create_preflight_enforce`` is true and the spec has more
+    operations than ``Settings.platform_max_openapi_operations`` and
+    ``tool_filter`` is not set, this function raises :class:`SpecDownloadError`
+    unless ``acknowledge_openapi_operation_limit`` is true (avoids a doomed
+    register/upload/parse that may fail on the executor cap). ``tool_filter``
+    alone is often *not* enough; prefer trimming the spec first.
     """
     settings = settings or get_settings()
 
     spec_bytes, content_type = await download_spec(spec_url, settings.max_spec_bytes)
+
+    if (
+        settings.create_preflight_enforce
+        and not acknowledge_openapi_operation_limit
+        and tool_filter is None
+    ):
+        n = len(enumerate_operations(parse_openapi_spec_bytes(spec_bytes)))
+        if n > settings.platform_max_openapi_operations:
+            raise SpecDownloadError(
+                f"Pre-flight: the spec has {n} operations, which exceeds the typical "
+                f"executor cap ({settings.platform_max_openapi_operations}). The platform "
+                "may count all operations in the upload before `tool_filter` is applied, so "
+                "a smaller document is often required. Run `analyze_openapi_spec_url` and "
+                "`search_openapi_operations`, then `export_trimmed_openapi_spec` and "
+                "`reupload_openapi_spec_text` (or re-create after trimming). To skip this "
+                "local check, pass acknowledge_openapi_operation_limit=true, or set "
+                "a tool_filter, or set CREATE_PREFLIGHT_ENFORCE=false."
+            )
 
     if base_url is None:
         base_url = _infer_base_url(spec_bytes) or ""

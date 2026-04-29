@@ -29,8 +29,14 @@ from openapi_mcp_builder.models import (
     OpenAPIServerUpdate,
     ToolFilter,
 )
-from openapi_mcp_builder.spec_inspect import parse_openapi_spec_bytes, tool_filter_from_tags
+from openapi_mcp_builder.spec_external_refs import summarize_external_refs
+from openapi_mcp_builder.spec_inspect import (
+    parse_openapi_spec_bytes,
+    search_openapi_operations,
+    tool_filter_from_tags,
+)
 from openapi_mcp_builder.spec_trim import spec_json_dumps_min, trim_openapi_document
+from openapi_mcp_builder.tool_filter_validate import validate_openapi_tool_filter
 from openapi_mcp_builder.workflow import (
     ParseTimeoutError,
     SpecDownloadError,
@@ -42,14 +48,22 @@ from openapi_mcp_builder.workflow import (
 mcp: FastMCP = FastMCP(
     name="openapi-mcp-builder",
     instructions=(
-        "Turn any OpenAPI (Swagger) spec URL into a hosted MCP server on the "
-        "Trimble Agentic AI Platform. For large specs, call "
-        "`analyze_openapi_spec_url` first. If the executor still counts all "
-        "operations in the upload (tool_filter alone is not enough), use "
-        "`export_trimmed_openapi_spec` then `reupload_openapi_spec_text` with a "
-        "smaller document. `include_paths` in tool_filter must be valid regex "
-        "(not glob). Use `create_mcp_from_openapi_url` for register -> upload -> parse; "
-        "also list, inspect, update, refresh, delete, reupload."
+        "OpenAPI (Swagger) spec URL to a hosted MCP server on the Trimble Agentic AI Platform.\n\n"
+        "Checklist (follow in order when the spec is large or unknown):\n"
+        "1) Always run `analyze_openapi_spec_url` first. If `exceeds_platform_limit` is true, "
+        "do **not** call `create_mcp_from_openapi_url` until you have a trim or acknowledge plan.\n"
+        "2) The executor often enforces a max **operation count on the uploaded file** *before* "
+        "`tool_filter` reduces tools. `tool_filter` = which operations become tools; **trim** = "
+        "smaller file to pass the op cap. Use `export_trimmed_openapi_spec` and "
+        "`reupload_openapi_spec_text`.\n"
+        "3) Use `search_openapi_operations` to find paths/tags from a user phrase. "
+        "4) Before sending `tool_filter` in create/update, run `validate_openapi_tool_filter` — "
+        "use `include_paths` / `exclude_paths` as **regex** (e.g. .*foo.*), not `path_pattern` "
+        "and not globs.\n"
+        "5) Optional env: `CREATE_PREFLIGHT_ENFORCE=true` blocks create when over the cap with "
+        "no filter/ack; set `acknowledge_openapi_operation_limit` on create to opt out.\n\n"
+        "Other: `create_mcp_from_openapi_url` (register, upload, parse), "
+        "list/inspect/update/delete/refresh, reupload from URL or body."
     ),
 )
 
@@ -131,6 +145,51 @@ async def analyze_openapi_spec_url(
 
 
 @mcp.tool(
+    name="search_openapi_operations",
+    description=(
+        "Download a spec from spec_url and return ranked path/method rows matching a free-text "
+        "query (path, tag, operationId). Use to pick include_tags, path_substrings, or "
+        "include_path_prefixes for export_trimmed_openapi_spec. Local only; no Tools API."
+    ),
+)
+async def search_openapi_operations_tool(
+    spec_url: str,
+    query: str,
+    limit: int = 50,
+) -> dict[str, Any]:
+    try:
+        settings = get_settings()
+        spec_bytes, _ = await download_spec(spec_url, settings.max_spec_bytes)
+        spec = parse_openapi_spec_bytes(spec_bytes)
+        rows = search_openapi_operations(spec, query, limit=limit)
+        return {
+            "ok": True,
+            "spec_url": spec_url,
+            "query": query,
+            "count": len(rows),
+            "matches": rows,
+        }
+    except (SpecDownloadError, ValueError) as exc:
+        return _error(exc)
+
+
+@mcp.tool(
+    name="validate_openapi_tool_filter",
+    description=(
+        "Check a tool_filter object before create or update: list unknown key names, "
+        "report invalid regex in include_paths/exclude_paths, and warn on glob-like patterns. "
+        "Set strict=true to fail on unknown keys or glob-style path patterns. "
+        "Does not call the Tools API."
+    ),
+)
+async def validate_openapi_tool_filter_tool(
+    tool_filter: dict[str, Any],
+    strict: bool = False,
+) -> dict[str, Any]:
+    return validate_openapi_tool_filter(tool_filter, strict=strict)
+
+
+@mcp.tool(
     name="build_tool_filter_for_tags",
     description=(
         "Build a `tool_filter` object with `include_tags` for use with "
@@ -156,25 +215,43 @@ async def build_tool_filter_for_tags(
     name="export_trimmed_openapi_spec",
     description=(
         "Download a spec from spec_url and return a NEW OpenAPI document with "
-        "only operations that match include_tags and/or path_substrings (literal "
-        "substring on the path, case-insensitive). Use when tool_filter does not "
-        "reduce the executor operation count—upload the returned spec via "
-        "`reupload_openapi_spec_text`. If spec_json is omitted, the export was "
-        "too large for the inline field; call this with narrower filters or use "
-        "a local script. path_substrings example for daily logs: [\"dailyLog\"]."
+        "only operations that match include_operation_keys (exclusive: exact "
+        "method+path like GET /v1/pets), and/or include_tags, path_substrings, "
+        "and/or include_path_prefixes. optional include_related_path_depth expands by "
+        "N path segments (heuristic, tag/path mode only). Prunes unused components/ by $ref. "
+        "When tool_filter does not help the op-count check, reupload the export via "
+        "`reupload_openapi_spec_text`."
     ),
 )
 async def export_trimmed_openapi_spec(
     spec_url: str,
+    include_operation_keys: list[str] | None = None,
     include_tags: list[str] | None = None,
     path_substrings: list[str] | None = None,
+    include_path_prefixes: list[str] | None = None,
+    include_related_path_depth: int | None = None,
+    prune_referenced_components: bool = True,
 ) -> dict[str, Any]:
     try:
         settings = get_settings()
         spec_bytes, _ = await download_spec(spec_url, settings.max_spec_bytes)
         spec = parse_openapi_spec_bytes(spec_bytes)
+        ext_in = summarize_external_refs(spec, max_samples=20)
         trimmed, before, after = trim_openapi_document(
-            spec, include_tags=include_tags, path_substrings=path_substrings
+            spec,
+            include_operation_keys=include_operation_keys,
+            include_tags=include_tags,
+            path_substrings=path_substrings,
+            include_path_prefixes=include_path_prefixes,
+            include_related_path_depth=include_related_path_depth,
+            prune_referenced_components=prune_referenced_components,
+        )
+        ext_out = summarize_external_refs(trimmed, max_samples=20)
+        merged_refs: list[str] = list(
+            dict.fromkeys(
+                list(ext_in.get("external_ref_samples") or [])
+                + list(ext_out.get("external_ref_samples") or [])
+            )
         )
         out: dict[str, Any] = {
             "ok": True,
@@ -182,7 +259,26 @@ async def export_trimmed_openapi_spec(
             "original_operation_count": before,
             "trimmed_operation_count": after,
             "under_platform_limit": after <= settings.platform_max_openapi_operations,
+            "external_ref_count": ext_in["external_ref_count"],
+            "external_ref_count_trimmed": ext_out["external_ref_count"],
         }
+        if ext_in.get("external_refs_note"):
+            out["external_refs_note"] = ext_in["external_refs_note"]
+        if merged_refs:
+            seen: set[str] = set()
+            wlist: list[dict[str, str]] = []
+            for r in merged_refs[:20]:
+                if r in seen:
+                    continue
+                seen.add(r)
+                wlist.append(
+                    {
+                        "code": "EXTERNAL_REF",
+                        "ref": r,
+                        "hint": ext_in.get("external_refs_note", ""),
+                    }
+                )
+            out["warnings"] = wlist
         text = spec_json_dumps_min(trimmed)
         raw = text.encode("utf-8")
         if len(raw) > settings.max_trimmed_spec_export_bytes:
@@ -214,9 +310,11 @@ async def export_trimmed_openapi_spec(
         "OpenAPI MCP server on the Trimble Agentic AI Platform, upload the "
         "spec to the returned SAS URL, wait for parsing to finish, and return "
         "the MCP gateway URL the agent can connect to. Optional `tool_filter` "
-        "(e.g. include_tags) limits which operations become tools for large specs. "
-        "Defaults to passthrough auth so the upstream API receives the end user's "
-        "TID on-behalf-of token at tool-invocation time."
+        "(e.g. include_tags) may limit which operations become tools; the executor "
+        "often still counts operations in the full file—trim if needed. "
+        "`acknowledge_openapi_operation_limit` skips the local pre-flight that runs "
+        "when CREATE_PREFLIGHT_ENFORCE is true. Defaults to passthrough auth so the "
+        "upstream API receives the end user's TID on-behalf-of token at tool time."
     ),
 )
 async def create_mcp_from_openapi_url(
@@ -236,6 +334,7 @@ async def create_mcp_from_openapi_url(
     static_headers: dict[str, str] | None = None,
     tool_filter: dict[str, Any] | None = None,
     wait_for_parse: bool = True,
+    acknowledge_openapi_operation_limit: bool = False,
 ) -> dict[str, Any]:
     """Register an OpenAPI spec as an MCP server and return its gateway URL."""
     try:
@@ -264,6 +363,7 @@ async def create_mcp_from_openapi_url(
             auth_config=auth_cfg,
             tool_filter=tf,
             wait_for_parse=wait_for_parse,
+            acknowledge_openapi_operation_limit=acknowledge_openapi_operation_limit,
         )
     except (
         SpecDownloadError,

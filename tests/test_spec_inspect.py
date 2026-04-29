@@ -11,6 +11,7 @@ from openapi_mcp_builder.spec_inspect import (
     count_operations_matching_any_tag,
     enumerate_operations,
     parse_openapi_spec_bytes,
+    search_openapi_operations,
     tool_filter_from_tags,
 )
 
@@ -91,3 +92,39 @@ def test_parse_bytes_json():
 def test_parse_rejects_non_openapi():
     with pytest.raises(ValueError):
         parse_openapi_spec_bytes(b"{} ")
+
+
+def test_search_openapi_operations_ranks_path_and_op_id():
+    spec = {
+        "openapi": "3.0.0",
+        "info": {"title": "T", "version": "1"},
+        "paths": {
+            "/v1/dailyLog": {
+                "get": {
+                    "operationId": "getDaily",
+                    "tags": ["DailyLog"],
+                    "responses": {"200": {"description": "x"}},
+                }
+            },
+            "/b": {"get": {"tags": ["Z"], "responses": {"200": {"description": "x"}}}},
+        },
+    }
+    r = search_openapi_operations(spec, "daily", limit=10)
+    assert len(r) == 1
+    assert "dailyLog" in r[0]["path"]
+
+
+def test_next_steps_in_summary():
+    spec = {
+        "openapi": "3.0.0",
+        "info": {"title": "T", "version": "1"},
+        "paths": {"/x": {"get": {}}},
+    }
+    s = build_summary(
+        spec,
+        platform_max_operations=50,
+    )
+    assert "next_steps" in s
+    assert any("export_trimmed" in step for step in s["next_steps"])
+    assert "external_ref_count" in s
+    assert s["external_ref_count"] == 0

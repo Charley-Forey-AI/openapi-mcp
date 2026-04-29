@@ -99,6 +99,12 @@ class Settings(BaseSettings):
     platform_max_openapi_operations: int = 50
     # Inline export cap for export_trimmed_openapi_spec; use reupload_openapi_spec_text if omitted.
     max_trimmed_spec_export_bytes: int = 2_000_000
+    # When true, create_mcp_from_openapi_url blocks if operation count > platform_max without
+    # tool_filter and without acknowledge_openapi_operation_limit.
+    create_preflight_enforce: bool = Field(
+        default=False,
+        description="Set CREATE_PREFLIGHT_ENFORCE=1 in the environment to enable.",
+    )
 
     @model_validator(mode="after")
     def _resolve_urls(self) -> Settings:

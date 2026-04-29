@@ -10,7 +10,9 @@ endpoints:
 | Tool                                    | Endpoint / behavior                               |
 | --------------------------------------- | ------------------------------------------------- |
 | `analyze_openapi_spec_url`              | Local: GET spec URL, summarize operations by tag  |
-| `export_trimmed_openapi_spec`          | Shrink the document (tag/path) for reupload       |
+| `search_openapi_operations`           | Local: keyword search over paths/tags/opIds       |
+| `validate_openapi_tool_filter`        | Local: unknown keys, regex check for paths        |
+| `export_trimmed_openapi_spec`          | Shrink (operation keys, tags, path, prefix, related) |
 | `reupload_openapi_spec_text`            | Reupload spec body without a public URL            |
 | `build_tool_filter_for_tags`            | Build `{"include_tags":[...]}` for tool_filter     |
 | `create_mcp_from_openapi_url`           | `POST /v1/openapi-servers` + SAS PUT + poll       |
@@ -45,9 +47,10 @@ The executor enforces a maximum number of OpenAPI operations per server (e.g. 50
 uploaded file before the filter is applied. In that case you must use a **physically
 smaller** spec (fewer path operations in the document):
 
-1. Run **`export_trimmed_openapi_spec`** on the `spec_url` with **`include_tags`**
-   and/or **`path_substrings`** (literal substrings in the path, e.g. `dailyLog` for
-   ProjectSight). This returns a trimmed OpenAPI JSON string and `trimmed_operation_count`.
+1. Run **`export_trimmed_openapi_spec`** on the `spec_url` with **`include_operation_keys`**
+   (exact `GET /path` list), **`include_tags`**, and/or **`path_substrings`** (literal
+   substrings in the path, e.g. `dailyLog` for ProjectSight). This returns a trimmed
+   OpenAPI JSON string and `trimmed_operation_count`.
 2. Call **`reupload_openapi_spec_text`** with that JSON as **`spec_text`** on the existing
    server (no Gist or extra hosting required).
 
@@ -56,6 +59,28 @@ For filters that the platform *does* apply to the live parse, use **`tool_filter
 patterns like `*daily*`, which are invalid regex). Use **`analyze_openapi_spec_url`**
 per-tag counts and set **`PLATFORM_MAX_OPENAPI_OPERATIONS`** / **`MAX_TRIMMED_SPEC_EXPORT_BYTES`**
 in `.env` for hints and export size.
+
+Optional: set **`CREATE_PREFLIGHT_ENFORCE=true`** so **`create_mcp_from_openapi_url`**
+stops before register when the downloaded spec is over the operation cap and you
+did not pass **`tool_filter`** or **`acknowledge_openapi_operation_limit=true`**
+(see `.env.example`).
+
+### For agent authors (Studio / Cursor)
+
+1. **Always** run **`analyze_openapi_spec_url`** first. If **`exceeds_platform_limit`**
+   is true, do not call **`create_mcp_from_openapi_url`** until you have a plan.
+2. **`tool_filter`** controls which operations become MCP tools; it may **not** reduce
+   the operation count the executor sees in the **uploaded file**. To pass a hard cap,
+   use **`export_trimmed_openapi_spec`** (smaller document) + **`reupload_openapi_spec_text`**.
+3. Use **`search_openapi_operations`** to map a user phrase (e.g. “daily log”) to real
+   paths and tags, or the **[endpoint picker](apps/endpoint-picker/README.md)** app to
+   copy **`include_operation_keys`** for **`export_trimmed_openapi_spec`**. **`include_paths` in
+   `tool_filter` must be regex**, not globs; run **`validate_openapi_tool_filter`**
+   with **`strict=true`** when you need to fail on unknown keys or glob-like path patterns.
+4. **`analyze_openapi_spec_url`** reports **`external_ref_*`** when the document uses
+   non-`#/` `$ref`s (file or URL). Bundle to a single file when possible. Invalid field
+   names (e.g. **`path_pattern`**) are a common failure mode — see
+   [docs/PLATFORM.md](docs/PLATFORM.md) for open questions to confirm with the platform team.
 
 ## Authentication (Trimble ID OBO)
 
@@ -189,13 +214,24 @@ openapi-mcp/
 │   ├── auth.py            # OBO passthrough + fallbacks
 │   ├── config.py          # Pydantic Settings
 │   ├── models.py          # Request / response schemas
+│   ├── operation_key.py  # Canonical operation_key for trim
+│   ├── spec_external_refs.py
 │   ├── spec_inspect.py   # Per-tag / path operation summaries (tool_filter)
-│   └── spec_trim.py      # Shrink paths in a spec for reupload
+│   ├── spec_ref_prune.py # Prune components to $ref-closure after trim
+│   ├── spec_trim.py      # Shrink paths in a spec for reupload
+│   └── tool_filter_validate.py
+├── docs/
+│   └── PLATFORM.md     # Open questions for the platform (op cap vs filter)
+├── apps/
+│   └── endpoint-picker/  # static UI: pick operations → include_operation_keys JSON
 └── tests/
     ├── conftest.py
     ├── test_auth.py
     ├── test_spec_inspect.py
+    ├── test_spec_external_refs.py
+    ├── test_spec_ref_prune.py
     ├── test_spec_trim.py
+    ├── test_tool_filter_validate.py
     └── test_workflow.py   # respx-mocked end-to-end flow
 ```
 

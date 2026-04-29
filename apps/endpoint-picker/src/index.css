@@ -1,0 +1,124 @@
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  font-family: system-ui, Segoe UI, Roboto, sans-serif;
+  background: #0f1419;
+  color: #e6edf3;
+  line-height: 1.4;
+}
+a {
+  color: #58a6ff;
+}
+code {
+  font-size: 0.9em;
+  background: #161b22;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+.wrap {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1.25rem;
+}
+h1 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem 0;
+}
+p.lead {
+  color: #8b949e;
+  margin: 0 0 1rem 0;
+  max-width: 80ch;
+}
+.textarea {
+  width: 100%;
+  min-height: 120px;
+  background: #161b22;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.8rem;
+}
+.btn {
+  background: #238636;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+  margin-right: 0.5rem;
+  margin-top: 0.5rem;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn-ghost {
+  background: #21262d;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+}
+.err {
+  color: #f85149;
+  font-size: 0.9rem;
+  margin-top: 0.5rem;
+}
+.tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 0.75rem 0;
+}
+input.filter {
+  flex: 1;
+  min-width: 200px;
+  background: #161b22;
+  color: #e6edf3;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+th,
+td {
+  border: 1px solid #30363d;
+  padding: 0.4rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+}
+th {
+  background: #161b22;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+tr:nth-child(even) {
+  background: #0d1117;
+}
+.scroll {
+  max-height: min(60vh, 600px);
+  overflow: auto;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+}
+.out {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 0.75rem;
+  margin-top: 1rem;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

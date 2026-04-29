@@ -9,6 +9,7 @@ from typing import Any
 import yaml
 
 from openapi_mcp_builder.models import ToolFilter
+from openapi_mcp_builder.spec_external_refs import summarize_external_refs
 
 # Platform default from typical Agentic executor errors (OPENAPI_MAX_SPEC_OPERATIONS).
 DEFAULT_PLATFORM_MAX_OPERATIONS = 50
@@ -141,6 +142,8 @@ def build_summary(
     sw = spec.get("swagger")
     version = f"openapi {oa}" if oa is not None else (f"swagger {sw}" if sw else "unknown")
 
+    ext = summarize_external_refs(spec, max_samples=20)
+
     return {
         "openapi_version": version,
         "title": (spec.get("info") or {}).get("title")
@@ -151,6 +154,19 @@ def build_summary(
         "exceeds_platform_limit": total > platform_max_operations,
         "tags": tag_rows,
         "path_prefixes_top": top_prefixes,
+        "external_ref_count": ext["external_ref_count"],
+        "external_ref_samples": ext["external_ref_samples"],
+        "external_ref_buckets": ext["external_ref_buckets"],
+        "external_refs_note": ext["external_refs_note"],
+        "next_steps": [
+            "1. If exceeds_platform_limit is true, do not call create_mcp_from_openapi_url "
+            "without a plan: the executor often counts all operations in the upload before "
+            "tool_filter. Prefer search_openapi_operations → export_trimmed_openapi_spec → "
+            "reupload_openapi_spec_text, or set CREATE_PREFLIGHT_ENFORCE and use "
+            "acknowledge_openapi_operation_limit if you must attempt create anyway.",
+            "2. For tool_filter JSON, use only known key names (see validate_openapi_tool_filter). "
+            "include_paths and exclude_paths must be regex (e.g. .*name.*), not globs.",
+        ],
         "filter_hints": {
             "description": (
                 "Use `tool_filter` on create (if supported) or "
@@ -184,3 +200,63 @@ def count_operations_matching_any_tag(
         if op_tags and (op_tags & want):
             n += 1
     return n
+
+
+def _score_op_match(
+    op: dict[str, Any], query_tokens: list[str], full_query: str
+) -> float:
+    """Larger = better match. Used by ``search_openapi_operations``."""
+    if not full_query and not query_tokens:
+        return 0.0
+    path = str(op.get("path", "")).lower()
+    oid = op.get("operation_id") or ""
+    oidl = oid.lower() if isinstance(oid, str) else ""
+    tag_blob = " ".join(t.lower() for t in (op.get("tags") or []) if isinstance(t, str))
+    hay = f"{path} {oidl} {tag_blob}"
+    if full_query and full_query in hay:
+        return 100.0 + hay.count(full_query) * 2.0
+    s = 0.0
+    for tok in query_tokens:
+        if not tok:
+            continue
+        if tok in path:
+            s += 3.0
+        if tok in oidl:
+            s += 2.0
+        for g in (op.get("tags") or []):
+            if isinstance(g, str) and tok in g.lower():
+                s += 1.0
+    return s
+
+
+def search_openapi_operations(
+    spec: dict[str, Any],
+    query: str,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Return ranked operations: path, method, tags, ``operation_id``, ``operation_key``."""
+    full = (query or "").strip().lower()
+    tokens = [t for t in full.split() if t] if full else []
+    if not full:
+        return []
+    ops = enumerate_operations(spec)
+    scored: list[tuple[float, int, dict[str, Any]]] = []
+    for i, op in enumerate(ops):
+        sc = _score_op_match(op, tokens, full)
+        if sc > 0.0:
+            scored.append((sc, -i, op))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    lim = max(0, min(int(limit), 200))
+    out: list[dict[str, Any]] = []
+    for sc, _neg, op in scored[:lim]:
+        out.append(
+            {
+                "operation_key": op.get("operation_key"),
+                "path": op.get("path"),
+                "method": op.get("method"),
+                "tags": op.get("tags") or [],
+                "operation_id": op.get("operation_id"),
+                "match_score": round(sc, 4),
+            }
+        )
+    return out
