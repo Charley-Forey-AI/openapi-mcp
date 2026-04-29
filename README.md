@@ -10,6 +10,7 @@ endpoints:
 | Tool                                    | Endpoint / behavior                               |
 | --------------------------------------- | ------------------------------------------------- |
 | `analyze_openapi_spec_url`              | Local: GET spec URL, summarize operations by tag  |
+| `pick_openapi_endpoints`                | Local: list all operations + **MCP App UI** (inline picker in supporting clients) |
 | `search_openapi_operations`           | Local: keyword search over paths/tags/opIds       |
 | `validate_openapi_tool_filter`        | Local: unknown keys, regex check for paths        |
 | `export_trimmed_openapi_spec`          | Shrink (operation keys, tags, path, prefix, related) |
@@ -73,7 +74,9 @@ did not pass **`tool_filter`** or **`acknowledge_openapi_operation_limit=true`**
    the operation count the executor sees in the **uploaded file**. To pass a hard cap,
    use **`export_trimmed_openapi_spec`** (smaller document) + **`reupload_openapi_spec_text`**.
 3. Use **`search_openapi_operations`** to map a user phrase (e.g. “daily log”) to real
-   paths and tags, or the **[endpoint picker](apps/endpoint-picker/README.md)** app (build and
+   paths and tags, or call **`pick_openapi_endpoints`** with the same **`spec_url`** when the
+   client supports **MCP Apps** (inline UI; see [MCP App picker](#mcp-app-inline-endpoint-picker)).
+   Alternatively use the standalone **[endpoint picker](apps/endpoint-picker/README.md)** (build and
    serve at `/endpoint-picker/`; see that README) to
    copy **`include_operation_keys`** for **`export_trimmed_openapi_spec`**. **`include_paths` in
    `tool_filter` must be regex**, not globs; run **`validate_openapi_tool_filter`**
@@ -82,6 +85,30 @@ did not pass **`tool_filter`** or **`acknowledge_openapi_operation_limit=true`**
    non-`#/` `$ref`s (file or URL). Bundle to a single file when possible. Invalid field
    names (e.g. **`path_pattern`**) are a common failure mode — see
    [docs/PLATFORM.md](docs/PLATFORM.md) for open questions to confirm with the platform team.
+
+### MCP App (inline endpoint picker)
+
+The tool **`pick_openapi_endpoints`** is registered with FastMCP **`AppConfig`** pointing at a
+**`ui://`** HTML resource. MCP clients that implement the [MCP Apps / UI extension](https://github.com/modelcontextprotocol/ext-apps)
+(for example recent **VS Code** or **Claude** builds) can render the picker **inside the chat**,
+receive the operation list from the tool result, and proxy **`export_trimmed_openapi_spec`**
+when the user runs export from the UI.
+
+- **Build the bundle** (writes into `src/openapi_mcp_builder/static/endpoint_picker_mcp.html`):
+
+  ```bash
+  cd apps/endpoint-picker-mcp
+  npm install
+  npm run build
+  ```
+
+  From the repo root you can also run **`npm run build:endpoint-picker-mcp`** (see root `package.json`).
+
+- **Trimble Agent Studio** must explicitly support MCP Apps and negotiate `io.modelcontextprotocol/ui`;
+  if it does not, **`pick_openapi_endpoints`** still returns the same JSON as a normal tool (no iframe).
+
+- **Manual check:** connect this server in an MCP Apps–capable client, invoke **`pick_openapi_endpoints`**
+  with a public **`spec_url`**, confirm the table appears, select operations, and run export from the UI.
 
 ## Authentication (Trimble ID OBO)
 
@@ -220,11 +247,14 @@ openapi-mcp/
 │   ├── spec_inspect.py   # Per-tag / path operation summaries (tool_filter)
 │   ├── spec_ref_prune.py # Prune components to $ref-closure after trim
 │   ├── spec_trim.py      # Shrink paths in a spec for reupload
+│   ├── static_resources.py  # MCP App HTML loader (ui:// endpoint picker)
+│   ├── static/           # bundled endpoint_picker_mcp.html (built by Vite)
 │   └── tool_filter_validate.py
 ├── docs/
 │   └── PLATFORM.md     # Open questions for the platform (op cap vs filter)
 ├── apps/
-│   └── endpoint-picker/  # static UI: pick operations → include_operation_keys JSON
+│   ├── endpoint-picker/      # static UI: paste spec → include_operation_keys JSON
+│   └── endpoint-picker-mcp/  # Vite MCP App bundle for inline picker (npm run build)
 └── tests/
     ├── conftest.py
     ├── test_auth.py
@@ -233,6 +263,7 @@ openapi-mcp/
     ├── test_spec_ref_prune.py
     ├── test_spec_trim.py
     ├── test_tool_filter_validate.py
+    ├── test_endpoint_picker.py  # pick_openapi_endpoints + MCP HTML smoke
     └── test_workflow.py   # respx-mocked end-to-end flow
 ```
 

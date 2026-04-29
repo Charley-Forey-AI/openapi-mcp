@@ -28,6 +28,15 @@ parse the document you upload. This repo only **detects** those references (see
 **not** bundle or inline external files. Resolving them is a **client-side** or **build-time**
 step (e.g. `redocly bundle`).
 
+## MCP Apps (inline UI) in Agent Studio
+
+This server advertises the **`io.modelcontextprotocol/ui`** extension (via FastMCP) and exposes
+**`pick_openapi_endpoints`** with a **`ui://`** HTML resource for an inline endpoint picker.
+
+**Question for Product/Platform:** Does Trimble Agent Studio negotiate MCP UI extensions and embed
+sandboxed tool UIs the same way as [documented MCP Apps hosts](https://github.com/modelcontextprotocol/ext-apps#supported-clients)?
+If not, clients should rely on the JSON-only tool result or the standalone `apps/endpoint-picker` web UI.
+
 ## Related documentation
 
 - Project README: [../README.md](../README.md) — “Large specs”, agent checklist, and tool table.

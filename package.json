@@ -1,0 +1,7 @@
+{
+  "name": "openapi-mcp-workspace",
+  "private": true,
+  "scripts": {
+    "build:endpoint-picker-mcp": "npm install --prefix apps/endpoint-picker-mcp && npm run build --prefix apps/endpoint-picker-mcp"
+  }
+}

@@ -19,6 +19,7 @@ from typing import Any
 
 import yaml
 from fastmcp import FastMCP
+from fastmcp.apps.config import AppConfig, ResourcePermissions
 from pydantic import ValidationError
 
 from openapi_mcp_builder.auth import AuthError, TokenProvider, extract_obo_header
@@ -31,11 +32,16 @@ from openapi_mcp_builder.models import (
 )
 from openapi_mcp_builder.spec_external_refs import summarize_external_refs
 from openapi_mcp_builder.spec_inspect import (
+    enumerate_operations,
     parse_openapi_spec_bytes,
     search_openapi_operations,
     tool_filter_from_tags,
 )
 from openapi_mcp_builder.spec_trim import spec_json_dumps_min, trim_openapi_document
+from openapi_mcp_builder.static_resources import (
+    ENDPOINT_PICKER_UI_URI,
+    load_endpoint_picker_html,
+)
 from openapi_mcp_builder.tool_filter_validate import validate_openapi_tool_filter
 from openapi_mcp_builder.workflow import (
     ParseTimeoutError,
@@ -57,6 +63,8 @@ mcp: FastMCP = FastMCP(
         "smaller file to pass the op cap. Use `export_trimmed_openapi_spec` and "
         "`reupload_openapi_spec_text`.\n"
         "3) Use `search_openapi_operations` to find paths/tags from a user phrase. "
+        "Clients that support MCP Apps (inline UI) may use `pick_openapi_endpoints` with the "
+        "same spec_url for an interactive picker; others keep using analyze + paste flow. "
         "4) Before sending `tool_filter` in create/update, run `validate_openapi_tool_filter` — "
         "use `include_paths` / `exclude_paths` as **regex** (e.g. .*foo.*), not `path_pattern` "
         "and not globs.\n"
@@ -168,6 +176,55 @@ async def search_openapi_operations_tool(
             "query": query,
             "count": len(rows),
             "matches": rows,
+        }
+    except (SpecDownloadError, ValueError) as exc:
+        return _error(exc)
+
+
+@mcp.resource(
+    ENDPOINT_PICKER_UI_URI,
+    name="OpenAPI endpoint picker (MCP App)",
+    title="OpenAPI endpoint picker",
+    description=(
+        "Single-page MCP App UI: filter and select OpenAPI operations for "
+        "`export_trimmed_openapi_spec`."
+    ),
+    app=AppConfig(
+        permissions=ResourcePermissions(clipboard_write={}),
+    ),
+)
+def endpoint_picker_mcp_resource() -> str:
+    return load_endpoint_picker_html()
+
+
+@mcp.tool(
+    name="pick_openapi_endpoints",
+    description=(
+        "Download an OpenAPI spec from spec_url and return every operation row "
+        "(operation_key, method, path, tags) for interactive selection. MCP App–capable "
+        "hosts render an inline picker bound to this tool; the UI calls "
+        "`export_trimmed_openapi_spec` with include_operation_keys. Does not call the "
+        "Trimble Tools API."
+    ),
+    app=AppConfig(
+        resource_uri=ENDPOINT_PICKER_UI_URI,
+        visibility=["model", "app"],
+    ),
+)
+async def pick_openapi_endpoints(spec_url: str) -> dict[str, Any]:
+    try:
+        settings = get_settings()
+        spec_bytes, _ = await download_spec(spec_url, settings.max_spec_bytes)
+        spec = parse_openapi_spec_bytes(spec_bytes)
+        ops = enumerate_operations(spec)
+        n = len(ops)
+        return {
+            "ok": True,
+            "spec_url": spec_url,
+            "platform_max_openapi_operations": settings.platform_max_openapi_operations,
+            "operation_count": n,
+            "operations": ops,
+            "exceeds_platform_limit": n > settings.platform_max_openapi_operations,
         }
     except (SpecDownloadError, ValueError) as exc:
         return _error(exc)
